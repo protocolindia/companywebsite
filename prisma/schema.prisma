@@ -1,0 +1,184 @@
+// ============================================
+// Prisma Schema
+// Models: User, Service, DocumentRequirement,
+//         Application, Document, StatusHistory,
+//         EmailTemplate, Setting
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum ApplicationStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  DOCS_PENDING       // admin requested re-upload
+  APPROVED
+  FILED
+  COMPLETED
+  REJECTED
+}
+
+enum DocumentStatus {
+  PENDING            // requirement not yet uploaded
+  UPLOADED           // user uploaded, awaiting review
+  APPROVED
+  REJECTED
+  REUPLOAD_REQUESTED
+}
+
+// ============================================
+// Users
+// ============================================
+model User {
+  id            String        @id @default(cuid())
+  email         String        @unique
+  passwordHash  String
+  name          String
+  phone         String?
+  role          Role          @default(USER)
+  emailVerified DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  applications  Application[]
+  statusActions StatusHistory[] @relation("ActorHistory")
+
+  @@index([email])
+}
+
+// ============================================
+// Services (Pvt Ltd, LLP, GST, etc.)
+// ============================================
+model Service {
+  id              String                @id @default(cuid())
+  slug            String                @unique  // "pvt-ltd", "gst-registration"
+  name            String
+  description     String                @db.Text
+  price           Int                   // in paise / smallest unit
+  durationDays    Int                   // estimated turnaround
+  isActive        Boolean               @default(true)
+  createdAt       DateTime              @default(now())
+
+  requirements    DocumentRequirement[]
+  applications    Application[]
+}
+
+model DocumentRequirement {
+  id          String   @id @default(cuid())
+  serviceId   String
+  name        String   // "PAN Card", "Aadhaar", "Address Proof"
+  description String?  @db.Text
+  isRequired  Boolean  @default(true)
+  order       Int      @default(0)
+
+  service     Service    @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  documents   Document[]
+
+  @@index([serviceId])
+}
+
+// ============================================
+// Applications
+// ============================================
+model Application {
+  id              String            @id @default(cuid())
+  userId          String
+  serviceId       String
+  referenceNo     String            @unique  // human-friendly, e.g. "APP-2026-00123"
+  status          ApplicationStatus @default(DRAFT)
+  formData        Json              // service-specific form fields
+  adminNotes      String?           @db.Text
+  rejectionReason String?           @db.Text
+  submittedAt     DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id])
+  service     Service          @relation(fields: [serviceId], references: [id])
+  documents   Document[]
+  history     StatusHistory[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([referenceNo])
+}
+
+// ============================================
+// Documents (per-application uploaded files)
+// ============================================
+model Document {
+  id              String              @id @default(cuid())
+  applicationId   String
+  requirementId   String
+  fileName        String              // original filename
+  storageKey      String              // path in storage (local or R2)
+  storageProvider String              // "local" or "r2"
+  fileSize        Int
+  mimeType        String
+  status          DocumentStatus      @default(UPLOADED)
+  rejectionReason String?             @db.Text  // why rejected / re-upload requested
+  uploadedAt      DateTime            @default(now())
+  reviewedAt      DateTime?
+  reviewedBy      String?             // admin user id
+
+  application     Application         @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  requirement     DocumentRequirement @relation(fields: [requirementId], references: [id])
+
+  @@index([applicationId])
+  @@index([status])
+}
+
+// ============================================
+// Status History (audit log)
+// ============================================
+model StatusHistory {
+  id              String   @id @default(cuid())
+  applicationId   String
+  actorId         String?  // null = system
+  fromStatus      String
+  toStatus        String
+  entityType      String   // "application" or "document"
+  entityId        String   // applicationId or documentId
+  reason          String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  actor           User?       @relation("ActorHistory", fields: [actorId], references: [id])
+
+  @@index([applicationId])
+}
+
+// ============================================
+// Email Templates (editable from admin UI)
+// ============================================
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  key       String   @unique  // "welcome", "doc_rejected", "app_approved", etc.
+  subject   String
+  bodyHtml  String   @db.Text
+  isActive  Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================
+// Settings (runtime config — Brevo keys, R2 keys, etc.)
+// ============================================
+model Setting {
+  key       String   @id   // "storage.provider", "brevo.apiKey", etc.
+  value     String   @db.Text
+  isSecret  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
